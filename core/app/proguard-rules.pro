@@ -1,95 +1,190 @@
--ignorewarnings
+#############################################
+# GLOBAL SETTINGS (MODERNIZED)
+#############################################
 
--dontwarn **
--dontnote **
--dontobfuscate
+# Keep useful debugging info for stack traces
+-keepattributes SourceFile,LineNumberTable,Signature,*Annotation*
+
+# Enable optimization and shrinking (default in R8, but explicit)
+-optimizations !code/simplification/arithmetic
+
+#############################################
+# REMOVE OVERLY BROAD SUPPRESSIONS
+#############################################
+
+# DO NOT USE:
+# -dontwarn **
+# -dontnote **
+# -dontobfuscate
+
+#############################################
+# JAVA / TOOLING (SCOPED)
+#############################################
 
 -keep class javax.** { *; }
--keep class jdkx.** { *; }
-
-# keep javac classes
 -keep class openjdk.** { *; }
 
-# Android builder model interfaces
--keep class com.android.** { *; }
-
-# Tooling API classes
+# Only keep required Android builder/tooling APIs (avoid full wildcard)
+-keep class com.android.tools.** { *; }
 -keep class com.itsaky.androidide.tooling.** { *; }
-
-# Builder model implementations
 -keep class com.itsaky.androidide.builder.model.** { *; }
 
-# Eclipse
--keep class org.eclipse.** { *; }
+#############################################
+# XML / JAXP
+#############################################
 
-# JAXP
--keep class jaxp.** { *; }
 -keep class org.w3c.** { *; }
 -keep class org.xml.** { *; }
 
-# Services
--keep @com.google.auto.service.AutoService class ** {
-}
--keepclassmembers class ** {
+#############################################
+# AUTO SERVICE (ANNOTATION PROCESSING)
+#############################################
+
+-keep @com.google.auto.service.AutoService class * { *; }
+
+-keepclassmembers class * {
     @com.google.auto.service.AutoService <methods>;
 }
 
-# EventBus
+#############################################
+# EVENTBUS
+#############################################
+
 -keepclassmembers class ** {
     @org.greenrobot.eventbus.Subscribe <methods>;
 }
+
 -keep enum org.greenrobot.eventbus.ThreadMode { *; }
--keepclassmembers class * extends org.greenrobot.eventbus.util.ThrowableFailureEvent {
+
+-keep class * extends org.greenrobot.eventbus.util.ThrowableFailureEvent {
     <init>(java.lang.Throwable);
 }
 
-# Accessed reflectively
+#############################################
+# REFLECTION-SENSITIVE CLASSES (TIGHTENED)
+#############################################
+
 -keep class io.github.rosemoe.sora.widget.component.EditorAutoCompletion {
     io.github.rosemoe.sora.widget.component.EditorCompletionAdapter adapter;
     int currentSelection;
 }
--keep class com.itsaky.androidide.projects.util.StringSearch {
-    packageName(java.nio.file.Path);
+
+-keepclassmembers class com.itsaky.androidide.projects.util.StringSearch {
+    java.lang.String packageName(java.nio.file.Path);
 }
--keep class * implements org.antlr.v4.runtime.Lexer {
-    <init>(...);
-}
+
+#############################################
+# ANTLR / LSP
+#############################################
+
+-keep class * implements org.antlr.v4.runtime.Lexer { <init>(...); }
+
 -keep class * extends com.itsaky.androidide.lsp.java.providers.completion.IJavaCompletionProvider {
     <init>(...);
 }
--keep class com.itsaky.androidide.editor.api.IEditor { *; }
+
+#############################################
+# EDITOR / INFLATER
+#############################################
+
+-keep interface com.itsaky.androidide.editor.api.IEditor
+
 -keep class * extends com.itsaky.androidide.inflater.IViewAdapter { *; }
+
 -keep class * extends com.itsaky.androidide.inflater.drawable.IDrawableParser {
     <init>(...);
-    android.graphics.drawable.Drawable parse();
-    android.graphics.drawable.Drawable parseDrawable();
+    android.graphics.drawable.Drawable parse(...);
 }
--keep class com.itsaky.androidide.utils.DialogUtils {  public <methods>; }
 
-# APK Metadata
--keep class com.itsaky.androidide.models.ApkMetadata { *; }
--keep class com.itsaky.androidide.models.ArtifactType { *; }
--keep class com.itsaky.androidide.models.MetadataElement { *; }
+#############################################
+# MODELS / METADATA
+#############################################
 
-# Parcelable
+-keep class com.itsaky.androidide.models.** { *; }
+
+#############################################
+# PARCELABLE
+#############################################
+
 -keepclassmembers class * implements android.os.Parcelable {
-  public static final android.os.Parcelable$Creator CREATOR;
+    public static final android.os.Parcelable$Creator CREATOR;
 }
 
-# Used in preferences
+#############################################
+# ENUMS USED IN SERIALIZATION
+#############################################
+
 -keep enum org.eclipse.lemminx.dom.builder.EmptyElements { *; }
 -keep enum com.itsaky.androidide.xml.permissions.Permission { *; }
 
-# Lots of native methods in tree-sitter
-# There are some fields as well that are accessed from native field
+#############################################
+# JNI / NATIVE (CRITICAL)
+#############################################
+
 -keepclasseswithmembers class ** {
     native <methods>;
 }
 
 -keep class com.itsaky.androidide.treesitter.** { *; }
 
-# Retrofit 2
+#############################################
+# NETWORKING (RETROFIT + OKHTTP)
+#############################################
+
 -dontwarn retrofit2.**
+-keep class retrofit2.** { *; }
+
+-keepclasseswithmembers class * {
+    @retrofit2.http.* <methods>;
+}
+
+-dontwarn okhttp3.**
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+
+#############################################
+# STATS / INTERNAL
+#############################################
+
+-keep class com.itsaky.androidide.stats.** { *; }
+
+#############################################
+# GSON (OPTIMIZED)
+#############################################
+
+-keep class * extends com.google.gson.TypeAdapter
+-keep class * implements com.google.gson.TypeAdapterFactory
+-keep class * implements com.google.gson.JsonSerializer
+-keep class * implements com.google.gson.JsonDeserializer
+
+# Allow shrinking but preserve field names where required
+-keepclassmembers,allowobfuscation class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+
+# Preserve generics for TypeToken
+-keep,allowshrinking,allowobfuscation class com.google.gson.reflect.TypeToken
+-keep,allowshrinking,allowobfuscation class * extends com.google.gson.reflect.TypeToken
+
+#############################################
+# THEMES / CONTRIBUTORS
+#############################################
+
+-keep enum com.itsaky.androidide.ui.themes.IDETheme { *; }
+
+-keep class * implements com.itsaky.androidide.contributors.Contributor { *; }
+
+#############################################
+# TARGETED WARNING SUPPRESSION ONLY
+#############################################
+
+-dontwarn sun.reflect.annotation.**
+-dontwarn jakarta.servlet.ServletContainerInitializer
+
+# JGit-related (retain minimal suppression)
+-dontwarn org.ietf.jgss.**
+-dontwarn java.lang.management.ManagementFactory
+-dontwarn java.lang.ProcessHandle-dontwarn retrofit2.**
 -keep class retrofit2.** { *; }
 
 -keepclasseswithmembers class * {
