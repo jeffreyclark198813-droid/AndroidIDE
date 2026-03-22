@@ -1,5 +1,4 @@
-name: Build and test
-
+name: Build, Test,
 on:
   push:
     branches: [ "dev", "main", "indexing", "release/**" ]
@@ -13,13 +12,16 @@ on:
       - '**.md'
       - 'fastlane/**'
       - '.github/workflows/crowdin_contributors.yml'
-  workflow_dispatch: { }
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  # Misc
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Signing info
+  # Signing
   IDE_SIGNING_ALIAS: ${{ secrets.IDE_SIGNING_ALIAS }}
   IDE_SIGNING_AUTH_PASS: ${{ secrets.IDE_SIGNING_AUTH_PASS }}
   IDE_SIGNING_AUTH_USER: ${{ secrets.IDE_SIGNING_AUTH_USER }}
@@ -28,69 +30,218 @@ env:
   IDE_SIGNING_URL: ${{ secrets.IDE_SIGNING_URL }}
   IDE_SIGNING_KEY_BIN: ${{ secrets.IDE_SIGNING_KEY_BIN }}
 
-  # Publishing credentials
+  # Maven
   ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MVN_USERNAME }}
   ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MVN_PASSWORD }}
   ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MVN_SIGNING_KEY }}
   ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.MVN_SIGNING_KEY_ID }}
   ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MVN_SIGNING_KEY_PASSWORD }}
 
-  # Build configuration
   BUILD_JAVA_VERSION: '17'
-  BUILD_JAVA_DIST: 'adopt'
-  BUILD_IS_RELEASE: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/**' }}
-  ReleaseAndroidIDE: ${{ github.ref == 'refs/heads/main' }}
+  BUILD_JAVA_DIST: 'temurin'
 
 jobs:
-  build_apk:
-    strategy:
-      matrix:
-        build_type: ['debug', 'release']
-    name: Build APK
+
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
     steps:
-      - name: Cancel previous runs
-        uses: styfle/cancel-workflow-action@0.12.1
+      - uses: actions/checkout@v4
+
+      - id: cache-key
+        run: echo "key=${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}" >> $GITHUB_OUTPUT
+
+  build_apk:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [debug, release]
+
+    steps:
+      - uses: actions/checkout@v4
         with:
-          access_token: ${{ github.token }}
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
+          submodules: recursive
           fetch-depth: 0
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+
+      - uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.BUILD_JAVA_VERSION }}
           distribution: ${{ env.BUILD_JAVA_DIST }}
-      - name: Change Gradle wrapper permissions
-        run: chmod +x ./gradlew
-      - name: Restore cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-      - name: Assemble ${{ matrix.build_type }} APK
+          java-version: ${{ env.BUILD_JAVA_VERSION }}
+          cache: gradle
+
+      - name: Gradle setup
         run: |
-          build_type=${{ matrix.build_type }}
-          ./gradlew :core:app:assemble${build_type^}
-      - name: Copy ${{ matrix.build_type }} APK
+          chmod +x gradlew
+          echo "org.gradle.configuration-cache=true" >> gradle.properties
+          echo "org.gradle.caching=true" >> gradle.properties
+
+      - name: Build APK
+        run: ./gradlew :core:app:assemble${{ matrix.build_type == 'release' && 'Release' || 'Debug' }} --stacktrace
+
+      - name: Collect APKs
         run: |
-          cp core/app/build/outputs/apk/${{ matrix.build_type }}/app-*.apk ./
-      - name: Upload arm64-v8a ${{ matrix.build_type }} APK
+          mkdir -p artifacts
+          find core/app/build/outputs/apk/${{ matrix.build_type }} -name "*.apk" -exec cp {} artifacts/ \;
+
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: apk-arm64-v8a-${{ matrix.build_type }}
-          path: app-arm64-v8a-${{ matrix.build_type }}.apk
-      - name: Upload armeabi-v7a ${{ matrix.build_type }} APK
+          name: apk-${{ matrix.build_type }}
+          path: artifacts/*.apk
+
+      - name: Upload mappings
+        if: ${{ matrix.build_type == 'release' }}
         uses: actions/upload-artifact@v4
         with:
-          name: apk-armeabi-v7a-${{ matrix.build_type }}
-          path: app-armeabi-v7a-${{ matrix.build_type }}.apk
+          name: mappings
+          path: '**/build/outputs/mapping'
+
+  unit_tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.BUILD_JAVA_DIST }}
+          java-version: ${{ env.BUILD_JAVA_VERSION }}
+          cache: gradle
+
+      - run: chmod +x gradlew
+
+      - name: Run tests
+        run: ./gradlew runTestsInCI --continue --stacktrace
+        env:
+          ANDROIDIDE_TEST: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: '**/build/reports/tests/'
+
+  tooling_tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.BUILD_JAVA_DIST }}
+          java-version: ${{ env.BUILD_JAVA_VERSION }}
+          cache: gradle
+
+      - run: chmod +x gradlew
+
+      - name: Tooling API tests
+        run: ./gradlew :tooling:impl:build --continue --stacktrace
+        env:
+          ANDROIDIDE_TEST: true
+          TEST_TOOLING_API_IMPL: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tooling-test-results
+          path: '**/build/reports/tests/'
+
+  connected_tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [26, 34]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.BUILD_JAVA_DIST }}
+          java-version: ${{ env.BUILD_JAVA_VERSION }}
+          cache: gradle
+
+      - run: chmod +x gradlew
+
+      - name: Run emulator tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          profile: pixel_5
+          emulator-options: -no-snapshot -noaudio -no-boot-anim
+          script: ./gradlew connectedCheck --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-tests-${{ matrix.api-level }}
+          path: '**/build/reports/androidTests/'
+
+  publish:
+    needs: [build_apk, unit_tests, tooling_tests]
+    runs-on: ubuntu-latest
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.BUILD_JAVA_DIST }}
+          java-version: ${{ env.BUILD_JAVA_VERSION }}
+          cache: gradle
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-release
+          path: artifacts
+
+      - name: Checksums
+        run: |
+          mkdir -p build
+          cd artifacts
+          sha256sum *.apk > ../build/SHA256.txt
+
+      - name: Publish
+        run: ./gradlew nyxMake nyxMark nyxPublish publish release --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nyx-state
+          path: build/nyx-state.json
+
+  publish_snapshots:
+    needs: build_apk
+    runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.BUILD_JAVA_DIST }}
+          java-version: ${{ env.BUILD_JAVA_VERSION }}
+          cache: gradle
+
+      - run: chmod +x gradlew
+
+      - name: Publish snapshots
+        run: ./gradlew publishAllPublicationsToMavenCentralRepository --stacktrace          name: apk-armeabi-v7a-${{ matrix.build_type }}
+        path: app-armeabi-v7a-${{ matrix.build_type }}.apk
       - name: Upload x86_64 ${{ matrix.build_type }} APK
         uses: actions/upload-artifact@v4
         with:
